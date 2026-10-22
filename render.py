@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-# book-monitor v0.9 renderer: render.py note|admin data.json out_dir
+# book-monitor v0.9 renderer, layout B (desktop briefing): render.py note|admin data.json out_dir
 import json, sys, os, html
-WRAP = ("<div style=\"max-width:600px;margin:0 auto;padding:0 4px;font-family:-apple-system,'Segoe UI',"
-        "Helvetica,Arial,sans-serif;font-size:15px;line-height:1.45;color:#1a1a1a\">")
-UP, DOWN, GREY, LINK = "#137333", "#b3261e", "#888", "#0b57d0"
+SANS = "Helvetica,Arial,sans-serif"
+SERIF = "Georgia,'Times New Roman',serif"
+INK, NAVY, MUTED, RULE, SOFT, BOX = "#1a1a1a", "#14243a", "#5f5f5f", "#ececec", "#e3e3e3", "#c9d2de"
+UP, DOWN, GREY, LINK = "#137333", "#b3261e", "#5f5f5f", "#1f4e8c"
+WRAP = ('<div style="max-width:760px;margin:0 auto;padding:16px 8px;font-family:%s;font-size:14px;line-height:1.5;color:%s">'
+        % (SANS, INK))
 TARGET_GAP = 0.60
-G = "color:#888"
-TB = '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse%s">%s</table>'
+G = "color:%s" % MUTED
+TB = '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse%s">%s</table>'
 
 
 def e(s):
@@ -42,18 +45,16 @@ def div(style, body):
     return '<div style="%s">%s</div>' % (style, body)
 
 
-def heading(t):
-    return div("font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#777;border-bottom:1px solid #e3e3e3;"
-               "padding:22px 0 4px;margin:0 0 8px", e(t))
+def td(style, body, extra=""):
+    return '<td%s style="%s">%s</td>' % (extra, style, body)
 
 
-def labelled(margin, label, body):
-    return div("margin:" + margin, '<span style="%s;font-size:12px">%s</span><br>%s' % (G, label, body))
+def serif_head(t, size=22, top=32):
+    return div("font-family:%s;font-size:%dpx;line-height:1.2;color:%s;margin:%dpx 0 6px" % (SERIF, size, NAVY, top), e(t))
 
 
-def item_block(it, last):
-    return labelled("0 0 14px" if last else "0 0 8px", "%s &middot; %s" % (e(it["date"]), e(it["category"])),
-                    "%s %s" % (e(it["text"]), links(it.get("links"))))
+def small_caps(t):
+    return '<span style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:%s;font-weight:700">%s</span>' % (MUTED, t)
 
 
 def quote_of(p, k):
@@ -63,8 +64,10 @@ def quote_of(p, k):
     return None, None
 
 
-def name_head(tk, sub):
-    return div("margin:0 0 4px", '<b style="font-size:16px">%s</b> <span style="%s;font-size:13px">%s</span>' % (e(tk), G, sub))
+def two_col(left, right, gap=28):
+    half = gap // 2
+    return TB % (";width:100%;table-layout:fixed", '<tr>%s%s</tr>' % (
+        td("vertical-align:top;width:50%%;padding-right:%dpx" % half, left), td("vertical-align:top;width:50%%;padding-left:%dpx" % half, right)))
 
 
 def data_checks(d):
@@ -86,128 +89,194 @@ def data_checks(d):
     return out
 
 
+def earnings_block(eb):
+    o = [div("border-top:2px solid %s;padding-top:8px" % NAVY,
+             '<span style="font-size:18px;font-weight:700">%s</span> <span style="font-size:12px;%s">%s</span>'
+             % (e(eb["ticker"]), G, e(eb["status"]))),
+         div("font-size:12px;%s;margin:0 0 6px" % G, e(eb["label"]))]
+    tb = eb.get("table")
+    if tb:
+        h = "padding:3px 4px;border-bottom:1px solid #d9d9d9;text-align:right;color:%s;font-size:11px" % MUTED
+        rows = ['<tr>%s%s%s%s</tr>' % (td("padding:3px 0;border-bottom:1px solid #d9d9d9", ""), td(h, "Actual"),
+                                        td(h, e(tb["est_header"])), td(h, "Yr ago"))]
+        c = "padding:4px;border-bottom:1px solid #f0f0f0;text-align:right"
+        for r in tb["rows"]:
+            rows.append('<tr>%s%s%s%s</tr>' % (td("padding:4px 0;border-bottom:1px solid #f0f0f0", e(r["label"])),
+                                                td(c + ";font-weight:700", e(r["actual"])), td(c, e(r.get("est", "n/a"))),
+                                                td(c, e(r.get("yr_ago", "n/a")))))
+        o.append(TB % (";width:100%;font-size:13px", "".join(rows)))
+        if tb.get("note"):
+            o.append(div("font-size:11px;%s;margin:4px 0 0" % G, e(tb["note"])))
+    for pa in eb.get("paragraphs", []):
+        o.append(div("margin:8px 0 0;font-size:13px", '<span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;%s">%s</span><br>%s%s'
+                     % (G, e(pa["label"]), e(pa["text"]), (" " + links(pa["links"])) if pa.get("links") else "")))
+    if eb.get("doc_links"):
+        o.append(div("font-size:12px;margin:8px 0 0", links(eb["doc_links"])))
+    return "".join(o)
+
+
+def item_rows(name_cell, items, top_rule):
+    rows = []
+    for i, it in enumerate(items):
+        rule = top_rule if i == 0 else "1px solid #ffffff"
+        rows.append('<tr>%s%s%s</tr>' % (
+            td("width:130px;padding:7px 10px 7px 0;vertical-align:top;border-top:%s" % rule, name_cell if i == 0 else ""),
+            td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid %s;font-size:12px;%s" % (RULE, G),
+               "%s<br>%s" % (e(it["date"]), e(it["category"]))),
+            td("padding:7px 0;vertical-align:top;border-top:1px solid %s" % RULE, "%s %s" % (e(it["text"]), links(it.get("links"))))))
+    return "".join(rows)
+
+
+def price_table(title, lst):
+    h = "padding:0 6px 4px;text-align:right;color:%s;font-size:11px" % MUTED
+    rows = ['<tr>%s%s%s%s%s</tr>' % (td("padding:0 0 4px;color:%s;font-size:11px;font-weight:700;letter-spacing:1.5px" % MUTED, title),
+                                      td(h, "Close"), td(h, "1 day"), td(h, "5 days"), td(h.replace("0 6px 4px", "0 0 4px 6px"), "vs 52w high"))]
+    c = "padding:3px 6px;border-top:1px solid %s;text-align:right" % RULE
+    for p in lst:
+        cl = p.get("close")
+        rows.append('<tr>%s%s%s%s%s</tr>' % (td("padding:3px 0;border-top:1px solid %s;font-weight:700" % RULE, e(p["ticker"])),
+                                              td(c, money(cl)), td(c, pct(pct_val(cl, p.get("prev_close")))),
+                                              td(c, pct(pct_val(cl, p.get("close_5d_ago")))),
+                                              td(c.replace("3px 6px", "3px 0 3px 6px"), pct(pct_val(cl, p.get("high52")) if p.get("high52") else None))))
+    return TB % (";width:100%;font-size:13px", "".join(rows))
+
+
 def render_note(d):
     late, m = bool(d.get("late_run")), d["market"]
     prices = {p["ticker"]: p for g in ("holdings", "watchlist") for p in d["prices"][g]}
-    o = [WRAP, div("font-size:20px;font-weight:700", "Book update &middot; " + e(d["date_label"])),
-         div(G + ";font-size:12px;margin-top:2px", "News %s ET &middot; Prices: %s close" % (e(d["window"]), e(d["price_session"])))]
+    o = [WRAP, div("font-family:%s;font-size:34px;line-height:1.1;color:%s" % (SERIF, NAVY), "Book update"),
+         TB % (";width:100%;border-bottom:1px solid " + NAVY, "<tr>%s%s</tr>" % (
+             td("padding:6px 0 10px;font-size:13px;%s" % G, e(d["date_label"])),
+             td("padding:6px 0 10px;font-size:13px;text-align:right;%s" % G,
+                "News %s ET &middot; Prices: %s close" % (e(d["window"]), e(d["price_session"])))))]
     if late:
-        o.append(div("font-size:13px;margin-top:6px", "Late run: prices are the %s close, not live; pre-market quotes left out." % e(d["price_session"])))
+        o.append(div("font-size:13px;margin-top:8px", "Late run: prices are the %s close, not live; pre-market quotes left out." % e(d["price_session"])))
     if d.get("header_note"):
-        o.append(div("font-size:13px;margin-top:6px", e(d["header_note"])))
+        o.append(div("font-size:13px;margin-top:8px", e(d["header_note"])))
+
+    left = []
     if d.get("summary"):
-        o.append(div("font-size:15px;margin-top:10px", "<b>%s</b>" % e(d["summary"])))
-    o.append(heading("Top"))
+        left.append(div("margin:0 0 12px;font-family:%s;font-size:20px;line-height:1.4;color:%s" % (SERIF, NAVY), e(d["summary"])))
     if d.get("top"):
-        o.append(TB % ("", "".join('<tr><td style="padding:3px 12px 3px 0;vertical-align:top;font-weight:700">%s</td>'
-                                   '<td style="padding:3px 0">%s <span style="%s;font-size:12px">%s</span></td></tr>'
-                                   % (e(r["ticker"]), e(r["headline"]), G, e(r["status"])) for r in d["top"])))
+        left.append(TB % (";width:100%", "".join('<tr>%s%s%s</tr>' % (
+            td("width:56px;padding:7px 8px 7px 0;border-top:1px solid %s;font-weight:700;vertical-align:top" % SOFT, e(r["ticker"])),
+            td("padding:7px 8px 7px 0;border-top:1px solid %s;vertical-align:top" % SOFT, e(r["headline"])),
+            td("padding:7px 0;border-top:1px solid %s;font-size:12px;%s;text-align:right;vertical-align:top;white-space:nowrap" % (SOFT, G), e(r["status"])))
+            for r in d["top"])))
     else:
-        o.append("<div>Nothing material on your names.</div>")
+        left.append(div("padding:7px 0;border-top:1px solid %s" % SOFT, "Nothing material on your names."))
 
     def num(x, f):
-        return '<span style="color:#888">n/a</span>' if x is None else f.format(x)
-    bp = "" if m.get("us10y_bp") is None else " (%+d bp)" % m["us10y_bp"]
-    o.append('<div style="border:1px solid #e3e3e3;padding:10px 12px;margin:16px 0 0;font-size:14px">' +
-             "<div><b>%s close</b> &nbsp;S&amp;P 500 %s &middot; Nasdaq 100 %s &middot; TSX %s &middot; US 10Y %s%s &middot; USD/CAD %s</div>"
-             % (e(m["day"]), pct(m.get("spx")), pct(m.get("ndx")), pct(m.get("tsx")), num(m.get("us10y"), "{:.2f}%"), bp,
-                num(m.get("usdcad"), "{:.4f}")))
+        return '<span style="color:%s">n/a</span>' % GREY if x is None else f.format(x)
+    bp = "" if m.get("us10y_bp") is None else ", %+d bp" % m["us10y_bp"]
+    mrows = [("S&amp;P 500", pct(m.get("spx"))), ("Nasdaq 100", pct(m.get("ndx"))), ("S&amp;P/TSX", pct(m.get("tsx"))),
+             ("US 10Y", num(m.get("us10y"), "{:.2f}%") + bp), ("USD/CAD", num(m.get("usdcad"), "{:.4f}"))]
+    box = [div("margin:0 0 6px", small_caps("%s close" % e(m["day"]))),
+           TB % (";width:100%;font-size:14px", "".join('<tr>%s%s</tr>' % (
+               td("padding:3px 0;border-bottom:1px solid #eef1f5;color:#444444", l),
+               td("padding:3px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700", v)) for l, v in mrows))]
     if m.get("notes"):
-        o.append(div("font-size:13px;color:#444;margin-top:4px", " ".join(e(n) for n in m["notes"])))
-    o.append(div("font-size:12px;margin-top:4px", links(m.get("links"))) + "</div>")
+        box.append(div("font-size:12px;%s;margin:8px 0 0;line-height:1.4" % G, " ".join(e(n) for n in m["notes"])))
+    if m.get("links"):
+        box.append(div("font-size:12px;margin:6px 0 0", links(m["links"])))
+    o.append(TB % (";width:100%;margin:20px 0 0", '<tr>%s%s%s</tr>' % (
+        td("vertical-align:top", "".join(left)), td("width:28px", "&nbsp;"),
+        td("width:220px;vertical-align:top;border:1px solid %s;padding:12px 14px" % BOX, "".join(box)))))
 
     if d.get("earnings"):
-        o.append(heading("Earnings"))
-        for eb in d["earnings"]:
-            o.append(name_head(eb["ticker"], "%s &middot; %s" % (e(eb["status"]), e(eb["label"]))))
-            tb = eb.get("table")
-            if tb:
-                h = "padding:3px %s;border-bottom:1px solid #e3e3e3;text-align:right"
-                rows = ['<tr style="color:#888;font-size:12px"><td style="padding:3px 8px 3px 0;border-bottom:1px solid #e3e3e3"></td>'
-                        '<td style="%s">Actual</td><td style="%s">%s</td><td style="%s">Yr ago</td></tr>'
-                        % (h % "8px", h % "8px", e(tb["est_header"]), h % "0 3px 8px")]
-                c = "padding:4px 8px;text-align:right"
-                for r in tb["rows"]:
-                    rows.append('<tr><td style="padding:4px 8px 4px 0">%s</td><td style="%s"><b>%s</b></td><td style="%s">%s</td>'
-                                '<td style="padding:4px 0 4px 8px;text-align:right">%s</td></tr>'
-                                % (e(r["label"]), c, e(r["actual"]), c, e(r.get("est", "n/a")), e(r.get("yr_ago", "n/a"))))
-                o.append(TB % (";font-size:14px;width:100%;max-width:520px;margin:4px 0 8px", "".join(rows)))
-                if tb.get("note"):
-                    o.append(div("font-size:12px;color:#888;margin:0 0 6px", e(tb["note"])))
-            for pa in eb.get("paragraphs", []):
-                o.append(labelled("0 0 6px", e(pa["label"]), e(pa["text"]) + (" " + links(pa["links"]) if pa.get("links") else "")))
-            if eb.get("doc_links"):
-                o.append(div("font-size:13px;margin:0 0 14px", links(eb["doc_links"])))
+        o.append(serif_head("Earnings"))
+        blocks = [earnings_block(eb) for eb in d["earnings"]]
+        for i in range(0, len(blocks), 2):
+            if i + 1 < len(blocks):
+                o.append(two_col(blocks[i], blocks[i + 1]))
+            else:
+                o.append(div("", blocks[i]))
+            o.append(div("height:14px;line-height:14px;font-size:1px", "&nbsp;"))
 
     for sec, title in (("holdings", "Holdings"), ("watchlist", "Watchlist")):
         if not d.get(sec):
             continue
-        o.append(heading(title))
+        o.append(serif_head(title))
+        rows = []
         for t in d[sec]:
             p = prices.get(t["ticker"], {})
             c = p.get("close")
-            sub = "%s &middot; %s %s" % (e(t["company"]), "%s %s" % (p.get("currency", "USD"), money(c)) if c is not None
-                                          else "close not confirmed", pct(pct_val(c, p.get("prev_close"))))
+            sub = ("%s %s %s" % (e(p.get("currency", "USD")), money(c), pct(pct_val(c, p.get("prev_close"))))) if c is not None else "close not confirmed"
             v, q = quote_of(p, "premarket")
             if not late and q is not None and abs(v) >= 1.0:
-                sub += " &middot; pre-mkt %s %s" % (pct(v), e(q.get("time", "")))
-            o.append(name_head(t["ticker"], sub))
-            for i, it in enumerate(t["items"]):
-                o.append(item_block(it, i == len(t["items"]) - 1))
+                sub += "<br>pre-mkt %s %s" % (pct(v), e(q.get("time", "")))
+            cell = '<b style="font-size:14px">%s</b><br><span style="font-size:12px;%s">%s</span><br><span style="font-size:12px">%s</span>' % (
+                e(t["ticker"]), G, e(t["company"]), sub)
+            rows.append(item_rows(cell, t["items"], "1px solid #b9c3d0"))
+        o.append(TB % (";width:100%;font-size:13.5px", "".join(rows)))
     if d.get("no_source_moves"):
-        o.append(div("font-size:13px;margin:8px 0 0", '<span style="color:#888">Moves with no news found:</span> ' +
-                     ", ".join("%s (%s) %s vs S&amp;P 500" % (e(x["ticker"]), e(x.get("status", "")), pct(x["pct"])) for x in d["no_source_moves"])))
+        o.append(div("font-size:13px;color:#444444;margin:10px 0 0", '<span style="%s">Moves with no news found:</span> ' % G +
+                     ", ".join("<b>%s</b> (%s) %s vs S&amp;P 500" % (e(x["ticker"]), e(x.get("status", "")), pct(x["pct"])) for x in d["no_source_moves"])))
+
     if d.get("peers"):
-        o.append(heading("Peers"))
-        o += [item_block(it, i == len(d["peers"]) - 1) for i, it in enumerate(d["peers"])]
+        o.append(serif_head("Peers"))
+        o.append(TB % (";width:100%;font-size:13.5px", "".join('<tr>%s%s</tr>' % (
+            td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid %s;font-size:12px;%s" % (RULE, G),
+               "%s<br>%s" % (e(it["date"]), e(it["category"]))),
+            td("padding:7px 0;vertical-align:top;border-top:1px solid %s" % RULE, "%s %s" % (e(it["text"]), links(it.get("links")))))
+            for it in d["peers"])))
+
     if d.get("ai"):
-        o.append(heading("AI · market-wide"))
-        o.append(div("font-size:12px;color:#888;margin:0 0 8px", "Companies not on your list. AI news on your own names stays under the ticker above."))
-        for i, it in enumerate(d["ai"]):
-            o.append(labelled("0 0 14px" if i == len(d["ai"]) - 1 else "0 0 10px", "%s &middot; %s" % (e(it["date"]), e(it["category"])),
-                              '<b>%s</b> <span style="%s;font-size:13px">%s</span> %s %s'
-                              % (e(it["name"]), G, e(it.get("company", "")), e(it["text"]), links(it.get("links")))))
-    if d.get("also_today"):
-        o.append(heading("Also today"))
-        o.append(TB % (";font-size:13px;color:#444", "".join(
-            '<tr><td style="padding:2px 10px 2px 0;font-weight:700;vertical-align:top;color:#1a1a1a">%s</td>'
-            '<td style="padding:2px 0">%s %s</td></tr>' % (e(a["ticker"]), e(a["text"]), links(a.get("links"))) for a in d["also_today"])))
+        rows = []
+        for it in d["ai"]:
+            rows.append('<tr>%s%s%s</tr>' % (
+                td("width:130px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid #e3e8ef",
+                   '<b>%s</b><br><span style="font-size:12px;%s">%s</span>' % (e(it["name"]), G, e(it.get("company", "")))),
+                td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid #e3e8ef;font-size:12px;%s" % G,
+                   "%s<br>%s" % (e(it["date"]), e(it["category"]))),
+                td("padding:7px 0;vertical-align:top;border-top:1px solid #e3e8ef", "%s %s" % (e(it["text"]), links(it.get("links"))))))
+        inner = (TB % (";width:100%", '<tr>%s%s</tr>' % (
+            td("font-family:%s;font-size:22px;color:%s" % (SERIF, NAVY), "AI, market-wide"),
+            td("text-align:right;font-size:12px;%s;vertical-align:bottom" % G, "Companies not on your list"))) +
+                 div("font-size:12px;%s;margin:2px 0 6px" % G, "AI news on your own names stays under the ticker above.") +
+                 TB % (";width:100%;font-size:13.5px", "".join(rows)))
+        o.append(TB % (";width:100%;margin:32px 0 0", "<tr>%s</tr>" % td("border:1px solid %s;padding:14px 18px" % BOX, inner)))
+
+    left, right = [], []
     if d.get("coming_up") or d.get("next_earnings"):
-        o.append(heading("Coming up"))
+        left.append(serif_head("Coming up", 20, 0))
         if d.get("coming_up"):
-            o.append(TB % (";font-size:14px", "".join(
-                '<tr><td style="padding:3px 10px 3px 0;color:#888;white-space:nowrap;vertical-align:top">%s</td>'
-                '<td style="padding:3px 0"><b>%s</b> %s %s</td></tr>' % (e(c["date"]), e(c["who"]), e(c["text"]), links(c.get("links")))
+            left.append(TB % (";width:100%;font-size:13px", "".join('<tr>%s%s</tr>' % (
+                td("width:84px;padding:4px 8px 4px 0;border-top:1px solid %s;vertical-align:top;%s" % (RULE, G), e(c["date"])),
+                td("padding:4px 0;border-top:1px solid %s;vertical-align:top" % RULE, "<b>%s</b> %s %s" % (e(c["who"]), e(c["text"]), links(c.get("links")))))
                 for c in d["coming_up"])))
         if d.get("next_earnings"):
-            o.append(div("font-size:13px;color:#444;margin:10px 0 0", '<span style="color:#888;font-size:12px">Next earnings, 30 days '
-                         "(* company-confirmed)</span><br>" + " &middot; ".join("%s %s" % (e(g["date"]), e(", ".join(g["names"])))
-                                                                                for g in d["next_earnings"])))
+            left.append(div("font-size:12px;color:#444444;margin:10px 0 0;line-height:1.5",
+                            '<span style="%s">Next earnings, 30 days (* company-confirmed):</span> ' % G +
+                            " &middot; ".join("%s %s" % (e(g["date"]), e(", ".join(g["names"]))) for g in d["next_earnings"])))
+    if d.get("also_today"):
+        right.append(serif_head("Also today", 20, 0))
+        right.append(TB % (";width:100%;font-size:13px;color:#333333", "".join('<tr>%s%s</tr>' % (
+            td("width:52px;padding:4px 8px 4px 0;border-top:1px solid %s;vertical-align:top;font-weight:700;color:%s" % (RULE, INK), e(a["ticker"])),
+            td("padding:4px 0;border-top:1px solid %s;vertical-align:top" % RULE, "%s %s" % (e(a["text"]), links(a.get("links")))))
+            for a in d["also_today"])))
+    if left or right:
+        o.append(div("height:32px;line-height:32px;font-size:1px", "&nbsp;"))
+        o.append(two_col("".join(left), "".join(right)))
 
-    o.append(heading("Prices · %s close" % d["price_session"]))
-    th = 'style="padding:2px 6px;text-align:right;font-weight:400"'
-    td = '<td style="padding:2px 6px;text-align:right">%s</td>'
-    rows, ok, n = [], 0, 0
+    o.append(serif_head("Prices"))
+    ok = n = 0
+    groups = []
     for g, label in (("holdings", "HOLDINGS"), ("watchlist", "WATCHLIST")):
         lst = sorted(d["prices"][g], key=lambda p: (pct_val(p.get("close"), p.get("prev_close")) is None,
                                                     -(pct_val(p.get("close"), p.get("prev_close")) or 0)))
         n += len(lst)
         ok += sum(1 for p in lst if pct_val(p.get("close"), p.get("prev_close")) is not None)
-        rows.append('<tr style="color:#888;font-size:11px"><td style="padding:%s">%s (%s)</td><td %s>Close</td><td %s>1 day</td>'
-                    '<td %s>5 days</td><td %s>vs 52w high</td></tr>' % ("0 0 4px" if g == "holdings" else "12px 0 4px", label,
-                    "/".join(sorted(set(p.get("currency", "USD") for p in lst)) or ["USD"]), th, th, th, th))
-        for p in lst:
-            c = p.get("close")
-            rows.append('<tr><td style="padding:2px 6px 2px 0"><b>%s</b></td>' % e(p["ticker"]) + td % money(c) +
-                        td % pct(pct_val(c, p.get("prev_close"))) + td % pct(pct_val(c, p.get("close_5d_ago"))) +
-                        '<td style="padding:2px 0 2px 6px;text-align:right">%s</td></tr>' % pct(pct_val(c, p.get("high52")) if p.get("high52") else None))
+        curs = "/".join(sorted(set(p.get("currency", "USD") for p in lst)) or ["USD"])
+        groups.append(price_table("%s (%s)" % (label, curs), lst))
     gaps = list(d.get("gaps") or [])
     if n and ok * 2 < n:
         gaps.insert(0, "Prices: 1-day %% missing for %d names." % (n - ok))
+        o.append(div("font-size:13px;%s" % G, "Prices left out: most closes could not be confirmed (see Gaps below)."))
     else:
-        o.append(TB % (";font-size:13px;width:100%;max-width:520px", "".join(rows)))
-        o.append(div("font-size:12px;margin:6px 0 0", '%s <span style="color:#888">&middot; S&amp;P 500 same day %s &middot; '
-                     "5 days = vs the close 5 sessions earlier</span>" % (link(d["prices"]["source"]), pct(m.get("spx")))))
+        o.append(div("font-size:12px;%s;margin:0 0 8px" % G, "%s close &middot; S&amp;P 500 same day %s &middot; 5 days = vs the close 5 sessions earlier &middot; %s"
+                     % (e(d["price_session"]), pct(m.get("spx")), link(d["prices"]["source"]))))
+        o.append(two_col(groups[0], groups[1], 32))
         allp = d["prices"]["holdings"] + d["prices"]["watchlist"]
         pm, ah, pms, ahs = [], [], 0, 0
         for p in allp:
@@ -226,14 +295,14 @@ def render_note(d):
                     ahs += 1
         pm.sort(key=lambda r: -abs(r[0]))
         ah.sort(key=lambda r: -abs(r[0]))
-        tail = lambda k: ' <span style="color:#888">&middot; %d others within 1%%</span>' % k if k else ""
+        tail = lambda k: ' <span style="%s">&middot; %d others within 1%%</span>' % (G, k) if k else ""
         if not late and (pm or pms):
-            o.append(div("font-size:13px;margin:8px 0 0", '<span style="color:#888">Pre-market, as of %s (StockAnalysis):</span> %s%s' % (
-                e(d.get("premarket_as_of", "")), " &middot; ".join("<b>%s</b> %s %s %s" % (e(p["ticker"]), e(p.get("currency", "USD")),
+            o.append(div("font-size:13px;color:#444444;margin:12px 0 0", '<span style="%s">Pre-market, as of %s (StockAnalysis):</span> %s%s' % (
+                G, e(d.get("premarket_as_of", "")), " &middot; ".join("<b>%s</b> %s %s %s" % (e(p["ticker"]), e(p.get("currency", "USD")),
                 money(q["price"]), pct(v)) for v, p, q in pm) or "none 1% or more", tail(pms))))
         if ah or ahs:
-            o.append(div("font-size:13px;margin:4px 0 0", '<span style="color:#888">After-hours, %s (StockAnalysis), names with no '
-                         "pre-market quote:</span> %s%s" % (e(d["price_session"]), " &middot; ".join("<b>%s</b> %s %s %s (%s)" % (
+            o.append(div("font-size:13px;color:#444444;margin:4px 0 0", '<span style="%s">After-hours, %s (StockAnalysis), names with no '
+                         "pre-market quote:</span> %s%s" % (G, e(d["price_session"]), " &middot; ".join("<b>%s</b> %s %s %s (%s)" % (
                              e(p["ticker"]), e(p.get("currency", "USD")), money(q["price"]), pct(v), e(q.get("time", "")))
                              for v, p, q in ah) or "none 1% or more", tail(ahs))))
     ch = data_checks(d)
@@ -247,9 +316,9 @@ def render_note(d):
     foot.append("Reply to change the list: &quot;bought NVDA&quot;, &quot;sold TSN&quot;, &quot;watch CRWV&quot;, &quot;target 400 on CLS&quot;. Replies are read only for list changes; anything else, tell Ryen.")
     foot.append("Facts from company releases, SEC EDGAR, StockAnalysis, US Treasury, Bank of Canada and named outlets. "
                 "Research aid, verify before acting, not client material. book-monitor " + e(d.get("version", "")))
-    o.append(div("border-top:1px solid #e3e3e3;margin:24px 0 0;padding:10px 0 0;font-size:12px;color:#888;line-height:1.5", "<br>".join(foot)))
+    o.append(div("border-top:1px solid %s;margin:30px 0 0;padding:12px 0 0;font-size:12px;%s;line-height:1.6" % (NAVY, G), "<br>".join(foot)))
     lb = list_block(d["list"])
-    o.append(div("font-family:Menlo,Consolas,monospace;font-size:11px;color:#999;margin:12px 0 20px;white-space:pre-wrap", e(lb)))
+    o.append(div("font-family:Menlo,Consolas,monospace;font-size:11px;color:#8a8a8a;margin:12px 0 20px;white-space:pre-wrap", e(lb)))
     o.append("</div>")
     return "\n".join(o), "%s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (d["subject"], lb)
 
@@ -263,12 +332,12 @@ def render_admin(a):
     o = [WRAP, div("font-size:20px;font-weight:700", "Book admin &middot; " + e(a["date_label"])),
          div(G + ";font-size:12px;margin-top:2px", e(a["run_line"]))]
     for s in a["sections"]:
-        o.append(heading(s["title"]))
+        o.append(div("font-size:11px;letter-spacing:1px;text-transform:uppercase;color:%s;border-bottom:1px solid %s;padding:22px 0 4px;margin:0 0 8px" % (MUTED, SOFT), e(s["title"])))
         if s.get("rows"):
-            o.append(TB % (";font-size:14px", "".join('<tr><td style="padding:3px 12px 3px 0;color:#888;vertical-align:top;'
-                     'white-space:nowrap">%s</td><td style="padding:3px 0">%s</td></tr>' % (e(r[0]), e(r[1])) for r in s["rows"])))
+            o.append(TB % (";font-size:14px", "".join('<tr><td style="padding:3px 12px 3px 0;color:%s;vertical-align:top;'
+                     'white-space:nowrap">%s</td><td style="padding:3px 0">%s</td></tr>' % (MUTED, e(r[0]), e(r[1])) for r in s["rows"])))
         o += [div("font-size:14px;margin:0 0 6px", e(t)) for t in s.get("text", [])]
-    o += [div("font-size:12px;color:#888;margin:16px 0 20px", "Sent log and closes for the next run are in the plain-text part of this email."), "</div>"]
+    o += [div("font-size:12px;color:%s;margin:16px 0 20px" % MUTED, "Sent log and closes for the next run are in the plain-text part of this email."), "</div>"]
     t = [a["subject"], "", "This email is formatted; open it in a mail app that shows HTML.", "", "--- SENT LOG ---"] + \
         list(a.get("log") or []) + ["--- END LOG ---", "--- CLOSES ---"] + list(a.get("closes") or []) + ["--- END CLOSES ---", ""]
     return "\n".join(o), "\n".join(t)
