@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# book-monitor v0.9 renderer, layout B (desktop briefing): render.py note|admin data.json out_dir
+# book-monitor v0.9 renderer, layout B (desktop briefing; Oct 27: target gaps admin only): render.py note|admin data.json out_dir
 import json, sys, os, html
 SANS = "Helvetica,Arial,sans-serif"
 SERIF = "Georgia,'Times New Roman',serif"
@@ -82,9 +82,17 @@ def data_checks(d):
                 out.append("%s close %s is outside its day range %s to %s" % (t, money(c), money(lo), money(hi)))
             if session and p.get("close_date") and p["close_date"] != session:
                 out.append("%s price is dated %s, not %s" % (t, p["close_date"], session))
-            tg = p.get("avg_target")
-            if tg is not None and float(c) > 0 and abs(float(tg) / float(c) - 1) > TARGET_GAP:
-                out.append("%s average analyst target %s %s is %+d%% from the %s close; possible stale price or data error"
+    return out
+
+
+def target_gaps(d):
+    # admin only: an average analyst target far from the close is often real after a big move, so it never shows in the note
+    out = []
+    for g in ("holdings", "watchlist"):
+        for p in d["prices"][g]:
+            t, c, tg = p["ticker"], p.get("close"), p.get("avg_target")
+            if c is not None and tg is not None and float(c) > 0 and abs(float(tg) / float(c) - 1) > TARGET_GAP:
+                out.append("%s average analyst target %s %s is %+d%% from the %s close"
                            % (t, p.get("currency", "USD"), money(tg), round((float(tg) / float(c) - 1) * 100), money(c)))
     return out
 
