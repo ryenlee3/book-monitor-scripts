@@ -2,7 +2,7 @@
 # book-monitor v0.9 checker: check.py note.json note.html note.txt | check.py --admin admin.json admin.txt
 import json, re, sys, html, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import data_checks
+from render import data_checks, target_gaps
 BANNED = ["stocktwits.com", "boerse-express", "gurufocus.com", "marketbeat.com", "trefis.com", "tradingkey",
           "simplywall.st", "kalkine", "zacks.com", "ad-hoc-news", "defenseworld", "ts2.tech", "parameter.io",
           "reddit.com", "seekingalpha.com/instablog", "weissratings"]
@@ -46,6 +46,7 @@ def check_note(dp, hp, tp):
     if not d.get("price_session_date"):
         W.append("price_session_date missing, so price dates were not checked")
     W += ["Data check shown in note: " + c for c in data_checks(d)]
+    W += ["Target gap (admin only, put under Data conflicts): " + c for c in target_gaps(d)]
     for x in (h, t):
         if "--- CURRENT LIST ---" not in x or "--- END LIST ---" not in x:
             F.append("List block missing from " + ("HTML" if x is h else "plain text"))
