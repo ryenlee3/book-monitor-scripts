@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# book-monitor v0.9 renderer, layout B (desktop briefing; Oct 27: target gaps admin only): render.py note|admin data.json out_dir
-import json, sys, os, html
+# book-monitor v0.10 renderer, layout B (desktop briefing; Oct 27: target gaps admin only; Nov 6: prices from the
+# engine's BOOK FACTS block): render.py note|admin data.json out_dir | render.py closes facts_email.txt
+import json, sys, os, html, re
 SANS = "Helvetica,Arial,sans-serif"
 SERIF = "Georgia,'Times New Roman',serif"
 INK, NAVY, MUTED, RULE, SOFT, BOX = "#1a1a1a", "#14243a", "#5f5f5f", "#ececec", "#e3e3e3", "#c9d2de"
@@ -10,6 +11,19 @@ WRAP = ('<div style="max-width:760px;margin:0 auto;padding:16px 8px;font-family:
 TARGET_GAP = 0.60
 G = "color:%s" % MUTED
 TB = '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse%s">%s</table>'
+GROUPS = ("holdings", "watchlist")
+
+# The engine's 06:45 "Book facts" email carries one sentence per name between these markers (stock-engine
+# book/morning.py fact_sentence; PM proxy decisions 24-29). note.json "facts" holds those lines verbatim.
+FACTS_START, FACTS_END = "--- BOOK FACTS ---", "--- END FACTS ---"
+# Book ticker -> the engine's symbol, copied from stock-engine config/book_symbol_map.yaml (PM proxy decision 22,
+# 2026-11-05). Any other ticker is the engine's <TICKER>.US, which the facts lines print without ".US".
+SYMBOL_MAP = {"BAM": "BAM.TO", "BN": "BN.TO", "CLS": "CLS.TO", "ENB": "ENB.TO", "RY": "RY.TO", "SLF": "SLF.TO",
+              "TD": "TD.TO", "BIP": "BIP-UN.TO"}
+BOOK_TICKER = {v: k for k, v in SYMBOL_MAP.items()}
+FACT_RE = re.compile(r"^(?P<sym>\S+) closed at (?P<close>\d[\d,]*\.\d+) (?:(?P<ccy>[A-Z]{3}) )?on (?P<date>\d{4}-\d{2}-\d{2})"
+                     r"(?:, (?P<dir>up|down) (?P<pct>\d+(?:\.\d+)?)% on the day|(?P<flat>, unchanged on the day))?(?:; |\.$)")
+NOPRICE_RE = re.compile(r"^(?P<sym>\S+): no price on ")
 
 
 def e(s):
@@ -23,10 +37,11 @@ def pct_val(c, p):
 
 
 def pct(v):
+    # <font color> renders the same colour as a styled span in 6 fewer bytes; it repeats about 150 times
     if v is None:
-        return '<span style="color:%s">n/a</span>' % GREY
+        return '<font color="%s">n/a</font>' % GREY
     r = round(v, 1)
-    return '<span style="color:%s">%s%%</span>' % ((UP, "+%.1f" % r) if r > 0 else (DOWN, "%.1f" % r) if r < 0 else (GREY, "0.0"))
+    return '<font color="%s">%s%%</font>' % ((UP, "+%.1f" % r) if r > 0 else (DOWN, "%.1f" % r) if r < 0 else (GREY, "0.0"))
 
 
 def money(x):
@@ -46,7 +61,12 @@ def div(style, body):
 
 
 def td(style, body, extra=""):
-    return '<td%s style="%s">%s</td>' % (extra, style, body)
+    return '<td%s%s>%s</td>' % (extra, ' style="%s"' % style if style else "", body)
+
+
+def tr(*cells):
+    """A row whose cells sit at the top: valign once on the row, not vertical-align on every cell."""
+    return '<tr valign="top">%s</tr>' % "".join(cells)
 
 
 def serif_head(t, size=22, top=32):
@@ -68,6 +88,91 @@ def two_col(left, right, gap=28):
     half = gap // 2
     return TB % (";width:100%;table-layout:fixed", '<tr>%s%s</tr>' % (
         td("vertical-align:top;width:50%%;padding-right:%dpx" % half, left), td("vertical-align:top;width:50%%;padding-left:%dpx" % half, right)))
+
+
+def facts_sym(ticker):
+    return SYMBOL_MAP.get(ticker, ticker)
+
+
+def book_ticker(sym):
+    return BOOK_TICKER.get(sym, sym)
+
+
+def facts_block(text):
+    """The lines between the BOOK FACTS markers of a saved email, verbatim (blank lines skipped); None without a block."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if FACTS_START not in lines or FACTS_END not in lines[lines.index(FACTS_START):]:
+        return None
+    i = lines.index(FACTS_START)
+    return [l for l in lines[i + 1:lines.index(FACTS_END, i)] if l.strip()]
+
+
+def valuation(line):
+    """The valuation part of a price line: the text after the first "; ", without the final full stop."""
+    if not FACT_RE.match(line) or "; " not in line:
+        return None
+    v = line.split("; ", 1)[1]
+    return v[:-1] if v.endswith(".") else v
+
+
+def parse_fact(line):
+    """{sym, close, ccy, date, pct1d, val, line} from one facts line; close None for a "no price" line; None if the
+    line is neither form."""
+    m = FACT_RE.match(line)
+    if m:
+        pc = None if not (m.group("pct") or m.group("flat")) else 0.0 if m.group("flat") else \
+            float(m.group("pct")) * (1 if m.group("dir") == "up" else -1)
+        return {"sym": m.group("sym"), "close": float(m.group("close").replace(",", "")), "ccy": m.group("ccy"),
+                "date": m.group("date"), "pct1d": pc, "val": valuation(line), "line": line, "close_text": m.group("close")}
+    m = NOPRICE_RE.match(line)
+    if m:
+        return {"sym": m.group("sym"), "close": None, "ccy": None, "date": None, "pct1d": None, "val": None, "line": line}
+    return None
+
+
+def facts_by_sym(lines):
+    out = {}
+    for l in lines or []:
+        f = parse_fact(l)
+        if f:
+            out.setdefault(f["sym"], f)
+    return out
+
+
+def with_facts(d):
+    """The note with every close, currency, close date and 1-day % taken from its facts line (one price per name).
+    A name with no line, or a "no price" line, has no close. The web day range is dropped (another vendor's).
+    Without a facts block the note is returned as it is."""
+    if not d.get("facts"):
+        return d
+    F = facts_by_sym(d["facts"])
+    out = dict(d, prices=dict(d["prices"]))
+    for g in GROUPS:
+        lst = []
+        for p in d["prices"][g]:
+            f = F.get(facts_sym(p["ticker"])) or {}
+            q = dict(p, close=f.get("close"), pct1d=f.get("pct1d"), close_date=f.get("date"), valuation=f.get("val"),
+                     from_facts=True, day_low=None, day_high=None)
+            if f.get("ccy"):
+                q["currency"] = f["ccy"]
+            lst.append(q)
+        out["prices"][g] = lst
+    return out
+
+
+def day_pct(p):
+    return p.get("pct1d") if p.get("from_facts") else pct_val(p.get("close"), p.get("prev_close"))
+
+
+def closes_lines(text):
+    """"YYYY-MM-DD TICKER=close,..." lines (one per close date) from a saved Book facts email, for the admin CLOSES
+    block: book tickers, no thousands separator, "no price" names left out."""
+    by_date = {}
+    for l in facts_block(text) or []:
+        f = parse_fact(l)
+        if f and f["close"] is not None:
+            by_date.setdefault(f["date"], []).append("%s=%s" % (book_ticker(f["sym"]), f["close_text"].replace(",", "")))
+    return ["%s %s" % (dt, ",".join(v)) for dt, v in sorted(by_date.items())]
 
 
 def data_checks(d):
@@ -104,14 +209,14 @@ def earnings_block(eb):
          div("font-size:12px;%s;margin:0 0 6px" % G, e(eb["label"]))]
     tb = eb.get("table")
     if tb:
-        h = "padding:3px 4px;border-bottom:1px solid #d9d9d9;text-align:right;color:%s;font-size:11px" % MUTED
-        rows = ['<tr>%s%s%s%s</tr>' % (td("padding:3px 0;border-bottom:1px solid #d9d9d9", ""), td(h, "Actual"),
-                                        td(h, e(tb["est_header"])), td(h, "Yr ago"))]
-        c = "padding:4px;border-bottom:1px solid #f0f0f0;text-align:right"
+        h, R = "padding:3px 4px;border-bottom:1px solid #d9d9d9;color:%s;font-size:11px" % MUTED, ' align="right"'
+        rows = ['<tr>%s%s%s%s</tr>' % (td("padding:3px 0;border-bottom:1px solid #d9d9d9", ""), td(h, "Actual", R),
+                                        td(h, e(tb["est_header"]), R), td(h, "Yr ago", R))]
+        c = "padding:4px;border-bottom:1px solid #f0f0f0"
         for r in tb["rows"]:
             rows.append('<tr>%s%s%s%s</tr>' % (td("padding:4px 0;border-bottom:1px solid #f0f0f0", e(r["label"])),
-                                                td(c + ";font-weight:700", e(r["actual"])), td(c, e(r.get("est", "n/a"))),
-                                                td(c, e(r.get("yr_ago", "n/a")))))
+                                                td(c + ";font-weight:700", e(r["actual"]), R), td(c, e(r.get("est", "n/a")), R),
+                                                td(c, e(r.get("yr_ago", "n/a")), R)))
         o.append(TB % (";width:100%;font-size:13px", "".join(rows)))
         if tb.get("note"):
             o.append(div("font-size:11px;%s;margin:4px 0 0" % G, e(tb["note"])))
@@ -123,33 +228,39 @@ def earnings_block(eb):
     return "".join(o)
 
 
-def item_rows(name_cell, items, top_rule):
-    rows = []
-    for i, it in enumerate(items):
-        rule = top_rule if i == 0 else "1px solid #ffffff"
-        rows.append('<tr>%s%s%s</tr>' % (
-            td("width:130px;padding:7px 10px 7px 0;vertical-align:top;border-top:%s" % rule, name_cell if i == 0 else ""),
-            td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid %s;font-size:12px;%s" % (RULE, G),
-               "%s<br>%s" % (e(it["date"]), e(it["category"]))),
-            td("padding:7px 0;vertical-align:top;border-top:1px solid %s" % RULE, "%s %s" % (e(it["text"]), links(it.get("links"))))))
-    return "".join(rows)
+def item_cells(it, rule=RULE, w=True):
+    # widths only on a table's first row: the column takes them from there
+    return (td(("width:84px;" if w else "") + "padding:7px 10px 7px 0;border-top:1px solid %s;font-size:12px;%s" % (rule, G),
+               "%s<br>%s" % (e(it["date"]), e(it["category"]))) +
+            td("padding:7px 0;border-top:1px solid %s" % rule, "%s %s" % (e(it["text"]), links(it.get("links")))))
+
+
+def item_rows(name_cell, items, top_rule, w=True):
+    # one name cell spanning the name's items (it used to repeat, empty, on every item row)
+    span = ' rowspan="%d"' % len(items) if len(items) > 1 else ""
+    first = tr(td(("width:130px;" if w else "") + "padding:7px 10px 7px 0;border-top:%s" % top_rule, name_cell, span),
+               item_cells(items[0], w=w) if items else "")
+    return first + "".join(tr(item_cells(it, w=False)) for it in items[1:])
 
 
 def price_table(title, lst):
-    h = "padding:0 6px 4px;text-align:right;color:%s;font-size:11px" % MUTED
+    h, R = "padding:0 6px 4px;color:%s;font-size:11px" % MUTED, ' align="right"'
     rows = ['<tr>%s%s%s%s%s</tr>' % (td("padding:0 0 4px;color:%s;font-size:11px;font-weight:700;letter-spacing:1.5px" % MUTED, title),
-                                      td(h, "Close"), td(h, "1 day"), td(h, "5 days"), td(h.replace("0 6px 4px", "0 0 4px 6px"), "vs 52w high"))]
-    c = "padding:3px 6px;border-top:1px solid %s;text-align:right" % RULE
+                                      td(h, "Close", R), td(h, "1 day", R), td(h, "5 days", R), td(h.replace("0 6px 4px", "0 0 4px 6px"), "vs 52w high", R))]
+    c = "padding:3px 6px;border-top:1px solid %s" % RULE
     for p in lst:
         cl = p.get("close")
         rows.append('<tr>%s%s%s%s%s</tr>' % (td("padding:3px 0;border-top:1px solid %s;font-weight:700" % RULE, e(p["ticker"])),
-                                              td(c, money(cl)), td(c, pct(pct_val(cl, p.get("prev_close")))),
-                                              td(c, pct(pct_val(cl, p.get("close_5d_ago")))),
-                                              td(c.replace("3px 6px", "3px 0 3px 6px"), pct(pct_val(cl, p.get("high52")) if p.get("high52") else None))))
+                                              td(c, money(cl), R), td(c, pct(day_pct(p)), R),
+                                              td(c, pct(pct_val(cl, p.get("close_5d_ago"))), R),
+                                              td(c.replace("3px 6px", "3px 0 3px 6px"), pct(pct_val(cl, p.get("high52")) if p.get("high52") else None), R)))
+        if p.get("valuation"):  # the valuation part of the name's facts line, verbatim (PM proxy decision 26)
+            rows.append('<tr><td colspan="5" style="padding:0 0 4px;font-size:11px;%s">%s</td></tr>' % (G, e(p["valuation"])))
     return TB % (";width:100%;font-size:13px", "".join(rows))
 
 
 def render_note(d):
+    d = with_facts(d)
     late, m = bool(d.get("late_run")), d["market"]
     prices = {p["ticker"]: p for g in ("holdings", "watchlist") for p in d["prices"][g]}
     o = [WRAP, div("font-family:%s;font-size:34px;line-height:1.1;color:%s" % (SERIF, NAVY), "Book update"),
@@ -166,10 +277,10 @@ def render_note(d):
     if d.get("summary"):
         left.append(div("margin:0 0 12px;font-family:%s;font-size:20px;line-height:1.4;color:%s" % (SERIF, NAVY), e(d["summary"])))
     if d.get("top"):
-        left.append(TB % (";width:100%", "".join('<tr>%s%s%s</tr>' % (
-            td("width:56px;padding:7px 8px 7px 0;border-top:1px solid %s;font-weight:700;vertical-align:top" % SOFT, e(r["ticker"])),
-            td("padding:7px 8px 7px 0;border-top:1px solid %s;vertical-align:top" % SOFT, e(r["headline"])),
-            td("padding:7px 0;border-top:1px solid %s;font-size:12px;%s;text-align:right;vertical-align:top;white-space:nowrap" % (SOFT, G), e(r["status"])))
+        left.append(TB % (";width:100%", "".join(tr(
+            td("width:56px;padding:7px 8px 7px 0;border-top:1px solid %s;font-weight:700" % SOFT, e(r["ticker"])),
+            td("padding:7px 8px 7px 0;border-top:1px solid %s" % SOFT, e(r["headline"])),
+            td("padding:7px 0;border-top:1px solid %s;font-size:12px;%s;white-space:nowrap" % (SOFT, G), e(r["status"]), ' align="right"'))
             for r in d["top"])))
     else:
         left.append(div("padding:7px 0;border-top:1px solid %s" % SOFT, "Nothing material on your names."))
@@ -206,16 +317,16 @@ def render_note(d):
             continue
         o.append(serif_head(title))
         rows = []
-        for t in d[sec]:
+        for k, t in enumerate(d[sec]):
             p = prices.get(t["ticker"], {})
             c = p.get("close")
-            sub = ("%s %s %s" % (e(p.get("currency", "USD")), money(c), pct(pct_val(c, p.get("prev_close"))))) if c is not None else "close not confirmed"
+            sub = ("%s %s %s" % (e(p.get("currency", "USD")), money(c), pct(day_pct(p)))) if c is not None else "close not confirmed"
             v, q = quote_of(p, "premarket")
             if not late and q is not None and abs(v) >= 1.0:
                 sub += "<br>pre-mkt %s %s" % (pct(v), e(q.get("time", "")))
             cell = '<b style="font-size:14px">%s</b><br><span style="font-size:12px;%s">%s</span><br><span style="font-size:12px">%s</span>' % (
                 e(t["ticker"]), G, e(t["company"]), sub)
-            rows.append(item_rows(cell, t["items"], "1px solid #b9c3d0"))
+            rows.append(item_rows(cell, t["items"], "1px solid #b9c3d0", k == 0))
         o.append(TB % (";width:100%;font-size:13.5px", "".join(rows)))
     if d.get("no_source_moves"):
         o.append(div("font-size:13px;color:#444444;margin:10px 0 0", '<span style="%s">Moves with no news found:</span> ' % G +
@@ -223,21 +334,15 @@ def render_note(d):
 
     if d.get("peers"):
         o.append(serif_head("Peers"))
-        o.append(TB % (";width:100%;font-size:13.5px", "".join('<tr>%s%s</tr>' % (
-            td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid %s;font-size:12px;%s" % (RULE, G),
-               "%s<br>%s" % (e(it["date"]), e(it["category"]))),
-            td("padding:7px 0;vertical-align:top;border-top:1px solid %s" % RULE, "%s %s" % (e(it["text"]), links(it.get("links")))))
-            for it in d["peers"])))
+        o.append(TB % (";width:100%;font-size:13.5px", "".join(tr(item_cells(it, w=k == 0)) for k, it in enumerate(d["peers"]))))
 
     if d.get("ai"):
         rows = []
-        for it in d["ai"]:
-            rows.append('<tr>%s%s%s</tr>' % (
-                td("width:130px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid #e3e8ef",
+        for k, it in enumerate(d["ai"]):
+            rows.append(tr(
+                td(("width:130px;" if k == 0 else "") + "padding:7px 10px 7px 0;border-top:1px solid #e3e8ef",
                    '<b>%s</b><br><span style="font-size:12px;%s">%s</span>' % (e(it["name"]), G, e(it.get("company", "")))),
-                td("width:84px;padding:7px 10px 7px 0;vertical-align:top;border-top:1px solid #e3e8ef;font-size:12px;%s" % G,
-                   "%s<br>%s" % (e(it["date"]), e(it["category"]))),
-                td("padding:7px 0;vertical-align:top;border-top:1px solid #e3e8ef", "%s %s" % (e(it["text"]), links(it.get("links"))))))
+                item_cells(it, "#e3e8ef", k == 0)))
         inner = (TB % (";width:100%", '<tr>%s%s</tr>' % (
             td("font-family:%s;font-size:22px;color:%s" % (SERIF, NAVY), "AI, market-wide"),
             td("text-align:right;font-size:12px;%s;vertical-align:bottom" % G, "Companies not on your list"))) +
@@ -249,9 +354,9 @@ def render_note(d):
     if d.get("coming_up") or d.get("next_earnings"):
         left.append(serif_head("Coming up", 20, 0))
         if d.get("coming_up"):
-            left.append(TB % (";width:100%;font-size:13px", "".join('<tr>%s%s</tr>' % (
-                td("width:84px;padding:4px 8px 4px 0;border-top:1px solid %s;vertical-align:top;%s" % (RULE, G), e(c["date"])),
-                td("padding:4px 0;border-top:1px solid %s;vertical-align:top" % RULE, "<b>%s</b> %s %s" % (e(c["who"]), e(c["text"]), links(c.get("links")))))
+            left.append(TB % (";width:100%;font-size:13px", "".join(tr(
+                td("width:84px;padding:4px 8px 4px 0;border-top:1px solid %s;%s" % (RULE, G), e(c["date"])),
+                td("padding:4px 0;border-top:1px solid %s" % RULE, "<b>%s</b> %s %s" % (e(c["who"]), e(c["text"]), links(c.get("links")))))
                 for c in d["coming_up"])))
         if d.get("next_earnings"):
             left.append(div("font-size:12px;color:#444444;margin:10px 0 0;line-height:1.5",
@@ -259,9 +364,9 @@ def render_note(d):
                             " &middot; ".join("%s %s" % (e(g["date"]), e(", ".join(g["names"]))) for g in d["next_earnings"])))
     if d.get("also_today"):
         right.append(serif_head("Also today", 20, 0))
-        right.append(TB % (";width:100%;font-size:13px;color:#333333", "".join('<tr>%s%s</tr>' % (
-            td("width:52px;padding:4px 8px 4px 0;border-top:1px solid %s;vertical-align:top;font-weight:700;color:%s" % (RULE, INK), e(a["ticker"])),
-            td("padding:4px 0;border-top:1px solid %s;vertical-align:top" % RULE, "%s %s" % (e(a["text"]), links(a.get("links")))))
+        right.append(TB % (";width:100%;font-size:13px;color:#333333", "".join(tr(
+            td("width:52px;padding:4px 8px 4px 0;border-top:1px solid %s;font-weight:700;color:%s" % (RULE, INK), e(a["ticker"])),
+            td("padding:4px 0;border-top:1px solid %s" % RULE, "%s %s" % (e(a["text"]), links(a.get("links")))))
             for a in d["also_today"])))
     if left or right:
         o.append(div("height:32px;line-height:32px;font-size:1px", "&nbsp;"))
@@ -271,19 +376,21 @@ def render_note(d):
     ok = n = 0
     groups = []
     for g, label in (("holdings", "HOLDINGS"), ("watchlist", "WATCHLIST")):
-        lst = sorted(d["prices"][g], key=lambda p: (pct_val(p.get("close"), p.get("prev_close")) is None,
-                                                    -(pct_val(p.get("close"), p.get("prev_close")) or 0)))
+        lst = sorted(d["prices"][g], key=lambda p: (day_pct(p) is None, -(day_pct(p) or 0)))
         n += len(lst)
-        ok += sum(1 for p in lst if pct_val(p.get("close"), p.get("prev_close")) is not None)
+        ok += sum(1 for p in lst if day_pct(p) is not None)
         curs = "/".join(sorted(set(p.get("currency", "USD") for p in lst)) or ["USD"])
         groups.append(price_table("%s (%s)" % (label, curs), lst))
     gaps = list(d.get("gaps") or [])
+    if not d.get("facts"):
+        o.append(div("font-size:13px;margin:0 0 6px", "Prices from the web: the engine's Book facts were not available."))
+    src = "closes and 1-day % from the engine's Book facts" if d.get("facts") else link(d["prices"]["source"])
     if n and ok * 2 < n:
         gaps.insert(0, "Prices: 1-day %% missing for %d names." % (n - ok))
         o.append(div("font-size:13px;%s" % G, "Prices left out: most closes could not be confirmed (see Gaps below)."))
     else:
         o.append(div("font-size:12px;%s;margin:0 0 8px" % G, "%s close &middot; S&amp;P 500 same day %s &middot; 5 days = vs the close 5 sessions earlier &middot; %s"
-                     % (e(d["price_session"]), pct(m.get("spx")), link(d["prices"]["source"]))))
+                     % (e(d["price_session"]), pct(m.get("spx")), src)))
         o.append(two_col(groups[0], groups[1], 32))
         allp = d["prices"]["holdings"] + d["prices"]["watchlist"]
         pm, ah, pms, ahs = [], [], 0, 0
@@ -328,7 +435,53 @@ def render_note(d):
     lb = list_block(d["list"])
     o.append(div("font-family:Menlo,Consolas,monospace;font-size:11px;color:#8a8a8a;margin:12px 0 20px;white-space:pre-wrap", e(lb)))
     o.append("</div>")
-    return "\n".join(o), "%s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (d["subject"], lb)
+    return compact("".join(o)), "%s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (d["subject"], lb)
+
+
+# Size (PM proxy decision 28, 2026-11-06: the note's HTML stays under 60 KB; with every style inline a full note was
+# about 99 KB). Cosmetic declarations move into one <style> block as short shared classes; whatever the layout depends
+# on stays inline (widths, table structure, centring, spacer heights; the % colours are <font color>), so a client
+# that drops <style> still shows a readable note, only plainer. Links take their colour from one rule.
+INLINE = ("width", "max-width", "table-layout", "border-collapse", "text-align", "vertical-align", "white-space", "height")
+STYLE_ATTR = re.compile(r' style="([^"]*)"')
+
+
+def _class_name(i):
+    s = ""
+    while True:
+        s = chr(97 + i % 26) + s
+        i = i // 26 - 1
+        if i < 0:
+            return s
+
+
+def _split(style):
+    """(cosmetic declarations, inline declarations) of one style attribute."""
+    decls = [x.strip() for x in style.split(";") if x.strip()]
+    if any(x.startswith("height:") for x in decls):  # spacers: all of it is layout
+        return "", ";".join(decls)
+    keep = [x for x in decls if x.split(":", 1)[0].strip() in INLINE or (x.startswith("margin:") and "auto" in x)]
+    return ";".join(x for x in decls if x not in keep), ";".join(keep)
+
+
+def compact(body):
+    body = body.replace(' style="color:%s;text-decoration:none"' % LINK, "").replace("&middot;", "\u00b7")
+    count = {}
+    for m in STYLE_ATTR.finditer(body):
+        rest = _split(m.group(1))[0]
+        if rest:
+            count[rest] = count.get(rest, 0) + 1
+    # the most used get the shortest names; ties in order of first use, so the output is stable
+    classes = {r: _class_name(i) for i, r in enumerate(sorted(count, key=lambda r: -count[r]))}
+
+    def sub(m):
+        rest, keep = _split(m.group(1))
+        return (' class="%s"' % classes[rest] if rest else "") + (' style="%s"' % keep if keep else "")
+
+    body = STYLE_ATTR.sub(sub, body)
+    css = "a{color:%s;text-decoration:none}" % LINK + "".join(".%s{%s}" % (c, r) for r, c in classes.items())
+    return ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,'
+            'initial-scale=1"><style>%s</style></head><body>%s</body></html>' % (css, body))
 
 
 def list_block(l):
@@ -352,6 +505,12 @@ def render_admin(a):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["closes"]:  # render.py closes facts_email.txt -> the CLOSES line(s) for the admin email
+        cl = closes_lines(open(sys.argv[2], encoding="utf-8").read())
+        if not cl:
+            sys.exit("no BOOK FACTS block with a close in " + sys.argv[2])
+        print("\n".join(cl))
+        sys.exit(0)
     kind, src, out = sys.argv[1:4]
     data = json.load(open(src, encoding="utf-8"))
     os.makedirs(out, exist_ok=True)

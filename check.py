@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# book-monitor v0.9 checker: check.py note.json note.html note.txt | check.py --admin admin.json admin.txt
+# book-monitor v0.10 checker: check.py note.json note.html note.txt [facts_email.txt] | check.py --admin admin.json admin.txt
+# facts_email.txt: the 06:45 "Book facts" email saved as text; required whenever note.json has "facts".
 import json, re, sys, html, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import data_checks, target_gaps
+from render import data_checks, target_gaps, with_facts, facts_block, facts_by_sym, facts_sym, parse_fact, money, pct
 BANNED = ["stocktwits.com", "boerse-express", "gurufocus.com", "marketbeat.com", "trefis.com", "tradingkey",
           "simplywall.st", "kalkine", "zacks.com", "ad-hoc-news", "defenseworld", "ts2.tech", "parameter.io",
           "reddit.com", "seekingalpha.com/instablog", "weissratings"]
@@ -10,11 +11,90 @@ MATERIAL = {"Earnings", "Guidance", "M&A", "Management", "Legal", "Regulatory", 
 CATEGORIES = MATERIAL | {"Release", "Filing", "Insider", "Ownership", "Analyst", "Dividend", "Media", "Event", "Update"}
 AI_CATEGORIES = {"Results", "Move", "Deal", "Funding", "Policy", "Analyst", "Strategist", "Breakthrough"}
 URL = r"https?://|www\."
+MAX_KB, WARN_KB = 60, 50  # PM proxy decision 28 (2026-11-06): the note's HTML stays under 60 KB
+ROW = re.compile(r"<tr[^>]*>((?:(?!<tr[ >]).)*?)</tr>", re.S)  # innermost rows only
+CELL = re.compile(r"<td([^>]*)>(.*?)</td>", re.S)
+NAME_CELL = re.compile(r"<b[^>]*>([^<]+)</b><br><span[^>]*>[^<]*</span><br>(.*?)</td>", re.S)
 
 
-def check_note(dp, hp, tp):
-    d, h, t = json.load(open(dp, encoding="utf-8")), open(hp, encoding="utf-8").read(), open(tp, encoding="utf-8").read()
+def txt(x):
+    return html.unescape(re.sub(r"<[^>]+>", "", x)).strip()
+
+
+def first_diff(a, b):
+    i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]), min(len(a), len(b)))
+    return "character %d: note %r, source %r" % (i + 1, a[i:i + 12], b[i:i + 12])
+
+
+def check_facts(d, h, src_text):
+    """Facts lines verbatim against the source email's block; every close, 1-day % and valuation row in the HTML
+    against that ticker's source line (PM proxy decisions 25-27)."""
     F, W = [], []
+    src = facts_block(src_text) if src_text is not None else None
+    if not d.get("facts"):
+        if src:
+            F.append("The source email has a BOOK FACTS block but note.json has no \"facts\"")
+        else:
+            W.append("No BOOK FACTS block: prices are from the web")
+        return F, W
+    if src_text is None:
+        return ["note.json has facts but no source email was given (check.py note.json note.html note.txt facts_email.txt)"], W
+    if src is None:
+        return ["The source email has no BOOK FACTS block"], W
+    nf = d["facts"]
+    if len(nf) != len(src):
+        F.append("Facts: note.json has %d lines, the source block %d" % (len(nf), len(src)))
+    for k, (a, b) in enumerate(zip(nf, src)):
+        if a != b:
+            F.append("Facts line %d differs from the source, %s" % (k + 1, first_diff(a, b)))
+    W += ["Facts line not understood (no price taken from it): " + l[:80] for l in src if parse_fact(l) is None]
+    S = facts_by_sym(src)
+    names = set(d["list"]["hold"]) | set(d["list"]["watch"])
+    W += ["%s has no facts line: close not confirmed" % t for t in sorted(names) if facts_sym(t) not in S]
+    W += ["Facts line for %s matches no list name" % s for s in sorted(S) if s not in {facts_sym(t) for t in names}]
+    exp = {}
+    for t in names:
+        f = S.get(facts_sym(t))
+        ok = f is not None and f["close"] is not None
+        exp[t] = (money(f["close"]) if ok else "n/a", txt(pct(f["pct1d"])) if ok else "n/a", f["val"] if f else None)
+    seen, vals, last = set(), {}, None
+    for row in ROW.findall(h):
+        cells = CELL.findall(row)
+        if len(cells) == 5 and txt(cells[0][1]) in exp:
+            last = txt(cells[0][1])
+            seen.add(last)
+            c, p, _ = exp[last]
+            if txt(cells[1][1]) != c:
+                F.append("Prices: %s close shows %s, its facts line says %s" % (last, txt(cells[1][1]), c))
+            if txt(cells[2][1]) != p:
+                F.append("Prices: %s 1-day shows %s, its facts line says %s" % (last, txt(cells[2][1]), p))
+        elif len(cells) == 1 and 'colspan="5"' in cells[0][0] and last:
+            vals[last] = txt(cells[0][1])
+            last = None
+        else:
+            last = None
+    for t in sorted(seen):
+        want, got = exp[t][2], vals.get(t)
+        if want != got:
+            F.append("Prices: %s valuation line %s" % (t, "missing" if got is None else "should be absent" if want is None
+                                                         else "differs from the source, " + first_diff(got, want)))
+    cur = {p["ticker"]: p.get("currency", "USD") for g in ("holdings", "watchlist") for p in with_facts(d)["prices"][g]}
+    for t, rest in NAME_CELL.findall(h):
+        t = txt(t)
+        if t not in exp:
+            continue
+        sub = txt(re.split(r"<br\s*/?>", rest)[0])
+        c, p, _ = exp[t]
+        want = "close not confirmed" if c == "n/a" else "%s %s %s" % (cur.get(t, "USD"), c, p)
+        if sub != want:
+            F.append("%s shows %r under its name; its facts line gives %r" % (t, sub, want))
+    return F, W
+
+
+def check_note(dp, hp, tp, fp=None):
+    d, h, t = json.load(open(dp, encoding="utf-8")), open(hp, encoding="utf-8").read(), open(tp, encoding="utf-8").read()
+    F, W = check_facts(d, h, open(fp, encoding="utf-8").read() if fp else None)
+    da = with_facts(d)
     vt = html.unescape(re.sub(r"<[^>]+>", " ", h))
     if re.search(URL, vt):
         F.append("Visible URL in text: " + re.search(r"\S*(https?://|www\.)\S*", vt).group(0)[:80])
@@ -31,7 +111,7 @@ def check_note(dp, hp, tp):
     if re.search(r"background", h, re.I):
         F.append("Background style present")
     F += ["Markdown symbol in text: " + s for s in ("**", "##", "](http") if s in vt]
-    P = [p for g in ("holdings", "watchlist") for p in d["prices"][g]]
+    P = [p for g in ("holdings", "watchlist") for p in da["prices"][g]]
     want, have = set(d["list"]["hold"]) | set(d["list"]["watch"]), set(p["ticker"] for p in P)
     if want - have:
         F.append("List names missing from Prices: " + ", ".join(sorted(want - have)))
@@ -45,8 +125,8 @@ def check_note(dp, hp, tp):
         W.append("No 52-week high: " + ", ".join(nohi))
     if not d.get("price_session_date"):
         W.append("price_session_date missing, so price dates were not checked")
-    W += ["Data check shown in note: " + c for c in data_checks(d)]
-    W += ["Target gap (admin only, put under Data conflicts): " + c for c in target_gaps(d)]
+    W += ["Data check shown in note: " + c for c in data_checks(da)]
+    W += ["Target gap (admin only, put under Data conflicts): " + c for c in target_gaps(da)]
     for x in (h, t):
         if "--- CURRENT LIST ---" not in x or "--- END LIST ---" not in x:
             F.append("List block missing from " + ("HTML" if x is h else "plain text"))
@@ -88,12 +168,12 @@ def check_note(dp, hp, tp):
           if eb.get("kind") == "preview" and len(eb.get("paragraphs", [])) > 4]
     if not d.get("sedi_names"):
         W.append("sedi_names empty: the SEDI disclosure line will not show")
-    kb = len(h.encode("utf-8"))
-    if kb > 102 * 1024:
-        F.append("HTML is %d KB; Gmail clips above 102 KB. Shorten items or move minor ones to Also today." % (kb // 1024))
-    elif kb > 90 * 1024:
-        W.append("HTML is %d KB, close to Gmail's 102 KB clip" % (kb // 1024))
-    return F, W, "PASS (%d KB)" % (kb // 1024)
+    size = len(h.encode("utf-8"))
+    if size > MAX_KB * 1024:
+        F.append("HTML is %.1f KB, over the %d KB limit. Shorten items or move minor ones to Also today." % (size / 1024, MAX_KB))
+    elif size > WARN_KB * 1024:
+        W.append("HTML is %.1f KB, close to the %d KB limit" % (size / 1024, MAX_KB))
+    return F, W, "PASS (%.1f KB)" % (size / 1024)
 
 
 def check_admin(ap, tp):
@@ -114,7 +194,7 @@ def check_admin(ap, tp):
 
 if __name__ == "__main__":
     v = sys.argv[1:]
-    F, W, ok = check_admin(v[1], v[2]) if v and v[0] == "--admin" else check_note(*v[:3])
+    F, W, ok = check_admin(v[1], v[2]) if v and v[0] == "--admin" else check_note(*v[:4])
     for x in F:
         print("FAIL: " + x)
     for x in W:
