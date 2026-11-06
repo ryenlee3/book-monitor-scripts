@@ -438,8 +438,8 @@ def render_note(d):
     return compact("".join(o)), "%s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (d["subject"], lb)
 
 
-# Size (PM proxy decision 28, 2026-11-06: the note's HTML stays under 60 KB; with every style inline a full note was
-# about 99 KB). Cosmetic declarations move into one <style> block as short shared classes; whatever the layout depends
+# Size (PM proxy decision 28, 2026-11-06: check.py FAILs above 72 KB, WARNs above 60 KB; with every style inline a
+# full note was about 92 KB). Cosmetic declarations move into one <style> block as short shared classes; whatever the layout depends
 # on stays inline (widths, table structure, centring, spacer heights; the % colours are <font color>), so a client
 # that drops <style> still shows a readable note, only plainer. Links take their colour from one rule.
 INLINE = ("width", "max-width", "table-layout", "border-collapse", "text-align", "vertical-align", "white-space", "height")

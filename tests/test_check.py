@@ -91,10 +91,17 @@ class Check(unittest.TestCase):
         self.assertEqual(F, [])
         self.assertIn("MSFT has no facts line: close not confirmed", W)
 
-    def test_over_60_kb_fails(self):
+    def padded(self, kb):
         h, _ = render.render_note(self.d)
-        pad = "<!--" + "x" * (61 * 1024 - len(h.encode())) + "-->"
-        self.assertFails(self.run_check(h=h.replace("</body>", pad + "</body>")), "over the 60 KB limit")
+        return h.replace("</body>", "<!--" + "x" * (kb * 1024 - len(h.encode())) + "--></body>")
+
+    def test_over_72_kb_fails(self):
+        self.assertFails(self.run_check(h=self.padded(73)), "over the 72 KB limit")
+
+    def test_over_60_kb_warns_only(self):
+        F, W, ok = self.run_check(h=self.padded(65))
+        self.assertEqual(F, [])
+        self.assertTrue(any("close to the 72 KB limit" in w for w in W), W)
 
     def test_cli_with_four_arguments(self):
         self.run_check()
