@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # book-monitor v0.10 checker: check.py note.json note.html note.txt [facts_email.txt] | check.py --admin admin.json admin.txt
-# facts_email.txt: the 06:45 "Book facts" email saved as text; required whenever note.json has "facts".
+# facts_email.txt: the 06:45 "Book facts" email saved as text; required whenever note.json has "facts". Nov 9: its
+# MARKET FACTS block, when present, is checked against note.json "market_facts" and every market number shown.
 import json, re, sys, html, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import data_checks, target_gaps, with_facts, facts_block, facts_by_sym, facts_sym, parse_fact, money, pct
+from render import (data_checks, target_gaps, with_facts, facts_block, facts_by_sym, facts_sym, facts_v2,
+                    parse_fact, market_block, parse_market, money, pct)
 BANNED = ["stocktwits.com", "boerse-express", "gurufocus.com", "marketbeat.com", "trefis.com", "tradingkey",
           "simplywall.st", "kalkine", "zacks.com", "ad-hoc-news", "defenseworld", "ts2.tech", "parameter.io",
           "reddit.com", "seekingalpha.com/instablog", "weissratings"]
@@ -52,11 +54,14 @@ def check_facts(d, h, src_text):
     names = set(d["list"]["hold"]) | set(d["list"]["watch"])
     W += ["%s has no facts line: close not confirmed" % t for t in sorted(names) if facts_sym(t) not in S]
     W += ["Facts line for %s matches no list name" % s for s in sorted(S) if s not in {facts_sym(t) for t in names}]
-    exp = {}
+    v2 = facts_v2(S)
+    exp, exp2 = {}, {}
     for t in names:
         f = S.get(facts_sym(t))
         ok = f is not None and f["close"] is not None
         exp[t] = (money(f["close"]) if ok else "n/a", txt(pct(f["pct1d"])) if ok else "n/a", f["val"] if f else None)
+        if v2:  # 5-day and vs-52w cells: the line's own figures, n/a without its clause (PM proxy decision 39)
+            exp2[t] = (txt(pct(f["pct5d"])) if ok else "n/a", txt(pct(f["vs52"])) if ok else "n/a")
     seen, vals, last = set(), {}, None
     for row in ROW.findall(h):
         cells = CELL.findall(row)
@@ -68,6 +73,10 @@ def check_facts(d, h, src_text):
                 F.append("Prices: %s close shows %s, its facts line says %s" % (last, txt(cells[1][1]), c))
             if txt(cells[2][1]) != p:
                 F.append("Prices: %s 1-day shows %s, its facts line says %s" % (last, txt(cells[2][1]), p))
+            if last in exp2:
+                for k, what in ((3, "5-day"), (4, "vs 52-week high")):
+                    if txt(cells[k][1]) != exp2[last][k - 3]:
+                        F.append("Prices: %s %s shows %s, its facts line says %s" % (last, what, txt(cells[k][1]), exp2[last][k - 3]))
         elif len(cells) == 1 and 'colspan="5"' in cells[0][0] and last:
             vals[last] = txt(cells[0][1])
             last = None
@@ -91,9 +100,56 @@ def check_facts(d, h, src_text):
     return F, W
 
 
+MARKET_LABELS = {"spx": "S&P 500", "ndx": "Nasdaq 100", "tsx": "S&P/TSX", "usdcad": "USD/CAD"}
+SAME_DAY = re.compile(r"S&P 500 same day (\S+)")
+
+
+def check_market(d, h, src_text):
+    """Every market number the source email's MARKET FACTS block carries, as shown in the note's market box and the
+    prices line, and note.json's market_facts word for word against the block (PM proxy decision 39)."""
+    F, W = [], []
+    src = market_block(src_text) if src_text is not None else None
+    if src is None:
+        if d.get("market_facts"):
+            F.append("note.json has market_facts but the source email has no MARKET FACTS block")
+        elif src_text is not None:
+            W.append("No MARKET FACTS block in the source email: market numbers are from the web")
+        return F, W
+    nm = d.get("market_facts")
+    if not nm:
+        W.append("note.json has no market_facts: the market box was built from the web and is checked against the block")
+    else:
+        if len(nm) != len(src):
+            F.append("Market facts: note.json has %d lines, the source block %d" % (len(nm), len(src)))
+        for k, (a, b) in enumerate(zip(nm, src)):
+            if a != b:
+                F.append("Market facts line %d differs from the source, %s" % (k + 1, first_diff(a, b)))
+    M = parse_market(src)
+    W += ["Market facts line not understood: " + l[:80] for l in src if not any(v["line"] == l for v in M.values())]
+    want = {k: txt(pct(v["pct1d"])) if k != "usdcad" else "{:.4f}".format(v["rate"]) for k, v in M.items()}
+    shown = {}
+    for row in ROW.findall(h):
+        cells = CELL.findall(row)
+        if len(cells) == 2:
+            shown.setdefault(txt(cells[0][1]), txt(cells[1][1]))
+    for k, v in want.items():
+        got = shown.get(MARKET_LABELS[k])
+        if got is None:
+            F.append("Market: %s is in the facts block but not in the note's market box" % MARKET_LABELS[k])
+        elif got != v:
+            F.append("Market: %s shows %s, the facts block says %s" % (MARKET_LABELS[k], got, v))
+    m = SAME_DAY.search(html.unescape(re.sub(r"<[^>]+>", "", h)))
+    if m and "spx" in want and m.group(1) != want["spx"]:
+        F.append("Prices line: S&P 500 same day shows %s, the facts block says %s" % (m.group(1), want["spx"]))
+    return F, W
+
+
 def check_note(dp, hp, tp, fp=None):
     d, h, t = json.load(open(dp, encoding="utf-8")), open(hp, encoding="utf-8").read(), open(tp, encoding="utf-8").read()
-    F, W = check_facts(d, h, open(fp, encoding="utf-8").read() if fp else None)
+    src_text = open(fp, encoding="utf-8").read() if fp else None
+    F, W = check_facts(d, h, src_text)
+    F2, W2 = check_market(d, h, src_text)
+    F, W = F + F2, W + W2
     da = with_facts(d)
     vt = html.unescape(re.sub(r"<[^>]+>", " ", h))
     if re.search(URL, vt):

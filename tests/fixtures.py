@@ -15,26 +15,48 @@ TSX = {"BAM": "BAM.TO", "BN": "BN.TO", "CLS": "CLS.TO", "ENB": "ENB.TO", "RY": "
 SESSION = "2026-11-05"
 
 
-def facts_line(t, i):
+def facts_line(t, i, v2=False):
+    """v2 (engine facts-v2, Nov 9): the 5-day clause (direction left out when it is the day's, stated when it differs,
+    "unchanged", or absent) and the 52-week clause (below, at the high, or absent for short history)."""
     sym = TSX.get(t, t)
     ccy = "CAD" if t in TSX else "USD"
     close = 1234.56 if t == "KLAC" else 100 + i * 7.25
     if t == "MSFT":
         close = 535.93
-    move = ", unchanged on the day" if i % 7 == 3 else ", %s %.1f%% on the day" % ("up" if i % 2 else "down", 0.4 + i / 10)
+    day = "unchanged" if i % 7 == 3 else "up" if i % 2 else "down"
+    move = ", unchanged on the day" if day == "unchanged" else ", %s %.1f%% on the day" % (day, 0.4 + i / 10)
+    if v2:
+        k = i % 6
+        if k == 0 or day == "unchanged":
+            move += " and %s %.1f%% over 5 days" % ("down" if day == "up" else "up", 1.1 + i / 10)
+        elif k == 1:
+            move += " and unchanged over 5 days"
+        elif k != 5:  # k == 5: no 5-day clause
+            move += " and %.1f%% over 5 days" % (2.0 + i / 10)
+        if i % 9 == 8:
+            move += ", at its 52-week high of %s" % "{:,.2f}".format(close)
+        elif i % 9 != 7:  # i % 9 == 7: no 52-week clause
+            move += ", %.1f%% below its 52-week high of %s" % (3.0 + i / 5, "{:,.2f}".format(close * 1.1))
     line = "%s closed at %s %s on %s%s" % (sym, "{:,.2f}".format(close), ccy, SESSION, move)
     if i % 5 != 4:  # every fifth name has no valuation clause
         line += "; EV/EBIT %.1fx against a 10-year median of %.1fx" % (18 + i / 3, 20 + i / 4)
     return line + "."
 
 
-def facts_lines(hold=HOLD, watch=WATCH):
-    return [facts_line(t, i) for i, t in enumerate(list(hold) + list(watch))]
+def facts_lines(hold=HOLD, watch=WATCH, v2=False):
+    return [facts_line(t, i, v2) for i, t in enumerate(list(hold) + list(watch))]
 
 
-def facts_email(lines):
+MARKET = ["S&P 500 closed at 7,376.86 on 2026-11-05, up 0.3% on the day.",
+          "Nasdaq 100 closed at 26,730.00 on 2026-11-05, down 1.0% on the day.",
+          "S&P/TSX Composite closed at 36,181.80 on 2026-11-05, unchanged on the day.",
+          "USD/CAD 1.4113 on 2026-11-05 (Bank of Canada)."]
+
+
+def facts_email(lines, market=None):
+    mk = "" if market is None else "\n--- MARKET FACTS ---\n" + "\n".join(market) + "\n--- END MARKET ---\n"
     return ("Book facts 2026-11-06: no change\n\nNo change in any of the 30 names.\n\n--- BOOK FACTS ---\n"
-            + "\n".join(lines) + "\n--- END FACTS ---\n\nEmail a ticker to someone for the full page.\n")
+            + "\n".join(lines) + "\n--- END FACTS ---\n" + mk + "\nEmail a ticker to someone for the full page.\n")
 
 
 def _links(n=2):
@@ -47,7 +69,7 @@ def _price(t, i):
             "day_low": 90 + i * 7, "day_high": 120 + i * 8, "close_date": SESSION, "avg_target": 110 + i * 7}
 
 
-def note(hold=HOLD, watch=WATCH, items=1, facts=True):
+def note(hold=HOLD, watch=WATCH, items=1, facts=True, v2=False, market=None):
     names = list(hold) + list(watch)
     text = ("Company said third-quarter revenue rose 12% to 4.1 billion dollars, ahead of its own guidance range, and "
             "raised the full-year outlook; the release names higher volumes in its core segment and a one-time "
@@ -69,7 +91,9 @@ def note(hold=HOLD, watch=WATCH, items=1, facts=True):
          "list": {"hold": list(hold), "watch": list(watch), "targets": "400 on CLS", "ciks": "none"},
          "sedi_names": ["RY", "TD"], "gaps": []}
     if facts:
-        d["facts"] = facts_lines(hold, watch)
+        d["facts"] = facts_lines(hold, watch, v2)
+    if market is not None:
+        d["market_facts"] = list(market)
     return d
 
 
