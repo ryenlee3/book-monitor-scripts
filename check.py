@@ -5,7 +5,7 @@
 import json, re, sys, html, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render import (data_checks, target_gaps, with_facts, facts_block, facts_by_sym, facts_sym, facts_v2,
-                    parse_fact, market_block, parse_market, money, pct)
+                    parse_fact, market_block, parse_market, money, pct, unwrap_log)
 BANNED = ["stocktwits.com", "boerse-express", "gurufocus.com", "marketbeat.com", "trefis.com", "tradingkey",
           "simplywall.st", "kalkine", "zacks.com", "ad-hoc-news", "defenseworld", "ts2.tech", "parameter.io",
           "reddit.com", "seekingalpha.com/instablog", "weissratings"]
@@ -21,6 +21,11 @@ NAME_CELL = re.compile(r"<b[^>]*>([^<]+)</b><br><span[^>]*>[^<]*</span><br>(.*?)
 
 def txt(x):
     return html.unescape(re.sub(r"<[^>]+>", "", x)).strip()
+
+
+def redirects(x):
+    """Each google.com/url link (or line holding one) still in a rendered note or admin text."""
+    return [m.group(0) for m in re.finditer(r"[^\s\"'<>|]*google\.com/url\?[^\s\"'<>|]*", x, re.I)]
 
 
 def first_diff(a, b):
@@ -162,6 +167,7 @@ def check_note(dp, hp, tp, fp=None):
         if re.search(URL, html.unescape(label)):
             F.append("Link text is a URL: " + label[:80])
         F += ["Banned source %s: %s" % (b, href[:80]) for b in BANNED if b in href.lower()]
+    F += ["Google redirect link left (render.py unwraps them): " + l[:100] for l in redirects(h)]
     if "—" in vt:
         F.append("Em dash in text")
     if re.search(r"background", h, re.I):
@@ -241,11 +247,12 @@ def check_admin(ap, tp):
           if l.count("|") < 3 or not re.match(r"\d{4}-\d{2}-\d{2}\|", l)]
     F += ["Bad closes line (want YYYY-MM-DD TICKER=close,...): " + l[:80] for l in a.get("closes") or []
           if not re.match(r"\d{4}-\d{2}-\d{2} [A-Z.]+=", l)]
+    F += ["Google redirect link left in the admin (render.py unwraps them): " + l[:100] for l in redirects(t)]
     if not a.get("closes"):
         W.append("No closes stored; tomorrow's 5-day % will be blank")
     if len(t.encode("utf-8")) > 200 * 1024:
         W.append("Admin plain text over 200 KB; prune the log to the last 10 sessions")
-    return F, W, "PASS (admin log %d lines, closes %d lines)" % (len(a.get("log") or []), len(a.get("closes") or []))
+    return F, W, "PASS (admin log %d lines, closes %d lines)" % (len(unwrap_log(a.get("log"))), len(a.get("closes") or []))
 
 
 if __name__ == "__main__":

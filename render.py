@@ -2,7 +2,7 @@
 # book-monitor v0.10 renderer, layout B (desktop briefing; Oct 27: target gaps admin only; Nov 6: prices from the
 # engine's BOOK FACTS block; Nov 9: 5-day %, vs 52w high and the market box from the engine's facts-v2 lines and
 # MARKET FACTS block): render.py note|admin data.json out_dir | render.py closes facts_email.txt
-import json, sys, os, html, re
+import json, sys, os, html, re, urllib.parse
 SANS = "Helvetica,Arial,sans-serif"
 SERIF = "Georgia,'Times New Roman',serif"
 INK, NAVY, MUTED, RULE, SOFT, BOX = "#1a1a1a", "#14243a", "#5f5f5f", "#ececec", "#e3e3e3", "#c9d2de"
@@ -39,6 +39,8 @@ INDEX_RE = re.compile(r"^(?P<name>S&P 500|Nasdaq 100|S&P/TSX Composite) closed a
                       r"(?P<date>\d{4}-\d{2}-\d{2})(?:, (?P<dir>up|down) (?P<pct>\d+(?:\.\d+)?)% on the day"
                       r"|(?P<flat>, unchanged on the day))?\.$")
 FX_RE = re.compile(r"^USD/CAD (?P<rate>\d+\.\d+) on (?P<date>\d{4}-\d{2}-\d{2}) \(Bank of Canada\)\.$")
+# Nov 10: the facts-v2 52-week high is the highest daily close, which can sit below an intraday high (TradingView)
+CLOSING_HIGH = "<br>52w high = highest daily close of the past 52 weeks, not the intraday high"
 WEB_ONLY = ("spx", "ndx")  # StockAnalysis SPY/QQQ: left out, not shown from the web, when the block lacks them
 
 
@@ -64,8 +66,51 @@ def money(x):
     return "n/a" if x is None else "{:,.2f}".format(float(x))
 
 
+# Nov 10: the Gmail connector shows every link as a Google redirect, and each run copies the sent log forward from the
+# last admin email, so log links were wrapped again every day (two or three layers, 69.6 KB for 301 lines).
+GOOGLE_REDIRECT = re.compile(r"^https?://(?:www\.)?google\.com/url\?(?P<query>.*)$", re.I | re.S)
+GOOGLE_KEYS = {"source", "ust", "sa", "usg", "ved"}  # the redirect's own parameters, never part of the real link
+
+
+def unwrap_link(url):
+    """The real link inside a google.com/url redirect, unwrapped as many times as it was wrapped: each layer is
+    replaced by its q parameter, percent-decoded. A raw "&" inside q (not one of Google's own parameters after it)
+    stays part of the real link. Any other URL comes back exactly as it is."""
+    while isinstance(url, str):
+        m = GOOGLE_REDIRECT.match(url)
+        if not m:
+            break
+        parts = m.group("query").split("&")
+        i = next((k for k, p in enumerate(parts) if p.startswith("q=")), None)
+        if i is None:
+            break
+        q = [parts[i][2:]]
+        for p in parts[i + 1:]:
+            if p.split("=", 1)[0] in GOOGLE_KEYS:
+                break
+            q.append(p)
+        url = urllib.parse.unquote("&".join(q))
+    return url
+
+
+def unwrap_log(lines):
+    """Admin sent-log lines (YYYY-MM-DD|TICKER|key|url) with every URL unwrapped; of lines that then share a ticker
+    and URL only the first is kept. Lines without a URL field pass through unchanged."""
+    out, seen = [], set()
+    for l in lines or []:
+        f = l.split("|", 3)
+        if len(f) == 4:
+            f[3] = unwrap_link(f[3])
+            if (f[1], f[3]) in seen:
+                continue
+            seen.add((f[1], f[3]))
+            l = "|".join(f)
+        out.append(l)
+    return out
+
+
 def link(l):
-    return '<a href="%s" style="color:%s;text-decoration:none">%s</a>' % (e(l["url"]), LINK, e(l["name"]))
+    return '<a href="%s" style="color:%s;text-decoration:none">%s</a>' % (e(unwrap_link(l["url"])), LINK, e(l["name"]))
 
 
 def links(ls):
@@ -487,8 +532,8 @@ def render_note(d):
         gaps.insert(0, "Prices: 1-day %% missing for %d names." % (n - ok))
         o.append(div("font-size:13px;%s" % G, "Prices left out: most closes could not be confirmed (see Gaps below)."))
     else:
-        o.append(div("font-size:12px;%s;margin:0 0 8px" % G, "%s close &middot; S&amp;P 500 same day %s &middot; 5 days = vs the close 5 sessions earlier &middot; %s"
-                     % (e(d["price_session"]), pct(m.get("spx")), src)))
+        o.append(div("font-size:12px;%s;margin:0 0 8px" % G, "%s close &middot; S&amp;P 500 same day %s &middot; 5 days = vs the close 5 sessions earlier &middot; %s%s"
+                     % (e(d["price_session"]), pct(m.get("spx")), src, CLOSING_HIGH if v2 else "")))
         o.append(two_col(groups[0], groups[1], 32))
         allp = d["prices"]["holdings"] + d["prices"]["watchlist"]
         pm, ah, pms, ahs = [], [], 0, 0
@@ -598,7 +643,7 @@ def render_admin(a):
         o += [div("font-size:14px;margin:0 0 6px", e(t)) for t in s.get("text", [])]
     o += [div("font-size:12px;color:%s;margin:16px 0 20px" % MUTED, "Sent log and closes for the next run are in the plain-text part of this email."), "</div>"]
     t = [a["subject"], "", "This email is formatted; open it in a mail app that shows HTML.", "", "--- SENT LOG ---"] + \
-        list(a.get("log") or []) + ["--- END LOG ---", "--- CLOSES ---"] + list(a.get("closes") or []) + ["--- END CLOSES ---", ""]
+        unwrap_log(a.get("log")) + ["--- END LOG ---", "--- CLOSES ---"] + list(a.get("closes") or []) + ["--- END CLOSES ---", ""]
     return "\n".join(o), "\n".join(t)
 
 
