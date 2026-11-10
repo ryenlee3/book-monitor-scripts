@@ -4,6 +4,7 @@
 # MARKET FACTS block, when present, is checked against note.json "market_facts" and every market number shown.
 import json, re, sys, html, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from render import SITE_URL, SITE_LABEL
 from render import (data_checks, target_gaps, with_facts, facts_block, facts_by_sym, facts_sym, facts_v2,
                     parse_fact, market_block, parse_market, money, pct, unwrap_log)
 BANNED = ["stocktwits.com", "boerse-express", "gurufocus.com", "marketbeat.com", "trefis.com", "tradingkey",
@@ -149,12 +150,33 @@ def check_market(d, h, src_text):
     return F, W
 
 
+SITE_WRAP = re.compile(r'<div data-bm="site-link"[^>]*>(.*?)</div>', re.S)
+
+
+def check_site_link(h):
+    """Nov 10: exactly one element marked data-bm="site-link", holding one link, to SITE_URL, labelled SITE_LABEL."""
+    wraps = SITE_WRAP.findall(h)
+    if len(wraps) != 1:
+        return ["Open-your-book link %s (data-bm=\"site-link\")" % ("missing" if not wraps else "repeated %d times" % len(wraps))]
+    a = re.findall(r'<a href="([^"]*)"[^>]*>(.*?)</a>', wraps[0], re.S)
+    if len(a) != 1:
+        return ["Open-your-book block holds %d links, not 1" % len(a)]
+    href, label = html.unescape(a[0][0]), html.unescape(re.sub(r"<[^>]+>", "", a[0][1])).strip()
+    F = []
+    if href != SITE_URL:
+        F.append("Open-your-book link points to %s, not %s" % (href[:80], SITE_URL))
+    if label != SITE_LABEL:
+        F.append("Open-your-book link reads %r, not %r" % (label[:40], SITE_LABEL))
+    return F
+
+
 def check_note(dp, hp, tp, fp=None):
     d, h, t = json.load(open(dp, encoding="utf-8")), open(hp, encoding="utf-8").read(), open(tp, encoding="utf-8").read()
     src_text = open(fp, encoding="utf-8").read() if fp else None
     F, W = check_facts(d, h, src_text)
     F2, W2 = check_market(d, h, src_text)
     F, W = F + F2, W + W2
+    F += check_site_link(h)
     da = with_facts(d)
     vt = html.unescape(re.sub(r"<[^>]+>", " ", h))
     if re.search(URL, vt):

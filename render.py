@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # book-monitor v0.10 renderer, layout B (desktop briefing; Oct 27: target gaps admin only; Nov 6: prices from the
 # engine's BOOK FACTS block; Nov 9: 5-day %, vs 52w high and the market box from the engine's facts-v2 lines and
-# MARKET FACTS block): render.py note|admin data.json out_dir | render.py closes facts_email.txt
+# MARKET FACTS block; Nov 10: an "Open your book" button to the book website first under the title):
+# render.py note|admin data.json out_dir | render.py closes facts_email.txt
 import json, sys, os, html, re, urllib.parse
 SANS = "Helvetica,Arial,sans-serif"
 SERIF = "Georgia,'Times New Roman',serif"
@@ -41,6 +42,14 @@ INDEX_RE = re.compile(r"^(?P<name>S&P 500|Nasdaq 100|S&P/TSX Composite) closed a
 FX_RE = re.compile(r"^USD/CAD (?P<rate>\d+\.\d+) on (?P<date>\d{4}-\d{2}-\d{2}) \(Bank of Canada\)\.$")
 # Nov 10: the facts-v2 52-week high is the highest daily close, which can sit below an intraday high (TradingView)
 CLOSING_HIGH = "<br>52w high = highest daily close of the past 52 weeks, not the intraday high"
+# Nov 10: the private book website (Cloudflare Workers behind Access; stock-engine book/site). One "Open your book" link at
+# the top of every note, its wrapper marked data-bm="site-link" so the site's Today page can drop it; check.py FAILs a
+# note without it or with it pointing anywhere else.
+SITE_URL = "https://4pv2a-hkg6m-wbagz.df2nu-94qec-veptg.workers.dev"
+SITE_LABEL = "Open your book"
+# A bordered button, not a filled one: check.py FAILs any background style. 44 px tall for a thumb on a phone.
+SITE_BUTTON = ("display:inline-block;min-height:44px;line-height:44px;padding:0 22px;border:2px solid %s;border-radius:6px;"
+               "font-size:16px;font-weight:700;color:%s;text-decoration:none" % (NAVY, NAVY))
 WEB_ONLY = ("spx", "ndx")  # StockAnalysis SPY/QQQ: left out, not shown from the web, when the block lacks them
 
 
@@ -395,6 +404,16 @@ def price_table(title, lst):
     return TB % (";width:100%;font-size:13px", "".join(rows))
 
 
+SITE_SLOT = "<!--site-link-->"  # compact() leaves comments alone; the button goes in after it, so its style stays inline
+
+
+def site_link():
+    """The "Open your book" button, the first thing under the title. Inserted after compact(), every style inline: a
+    client that drops <style> still shows a button big enough to tap."""
+    return '<div data-bm="site-link" style="margin:14px 0 0"><a href="%s" style="%s">%s</a></div>' % (
+        e(SITE_URL), SITE_BUTTON, e(SITE_LABEL))
+
+
 def render_note(d):
     d = with_market(with_facts(d))
     late, m = bool(d.get("late_run")), d["market"]
@@ -403,7 +422,8 @@ def render_note(d):
          TB % (";width:100%;border-bottom:1px solid " + NAVY, "<tr>%s%s</tr>" % (
              td("padding:6px 0 10px;font-size:13px;%s" % G, e(d["date_label"])),
              td("padding:6px 0 10px;font-size:13px;text-align:right;%s" % G,
-                "News %s ET &middot; Prices: %s close" % (e(d["window"]), e(d["price_session"])))))]
+                "News %s ET &middot; Prices: %s close" % (e(d["window"]), e(d["price_session"]))))),
+         SITE_SLOT]
     if late:
         o.append(div("font-size:13px;margin-top:8px", "Late run: prices are the %s close, not live; pre-market quotes left out." % e(d["price_session"])))
     if d.get("header_note"):
@@ -578,7 +598,8 @@ def render_note(d):
     lb = list_block(d["list"])
     o.append(div("font-family:Menlo,Consolas,monospace;font-size:11px;color:#8a8a8a;margin:12px 0 20px;white-space:pre-wrap", e(lb)))
     o.append("</div>")
-    return compact("".join(o)), "%s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (d["subject"], lb)
+    return compact("".join(o)).replace(SITE_SLOT, site_link(), 1), "%s\n\n%s: %s\n\nThis email is formatted; open it in a mail app that shows HTML.\n\n%s\n" % (
+        d["subject"], SITE_LABEL, SITE_URL, lb)
 
 
 # Size (PM proxy decision 28, 2026-11-06: check.py FAILs above 72 KB, WARNs above 60 KB; with every style inline a
